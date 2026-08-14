@@ -361,3 +361,11 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Frontend / Vue Client
+**/client/node_modules/
+**/client/dist/
+**/client/.env.local
+**/client/.env.*.local
+**/client/.pnp
+**/client/.pnp.js
