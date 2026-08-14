@@ -1,5 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using FluentValidation;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.OpenApi;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 using ProductManagement.Application.Contracts;
 using ProductManagement.Application.Services;
 using ProductManagement.Application.Validations;
@@ -9,7 +13,6 @@ using ProductManagement.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
@@ -27,18 +30,37 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Register FluentValidation validators
 builder.Services.AddValidatorsFromAssemblyContaining<ProductValidator>();
 
-// Configure DB Context with SQL Server
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// Register Dependency Injection services
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IProductService, ProductService>();
 
-builder.Services.AddOpenApi();
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        var azureAdSection = builder.Configuration.GetSection("AzureAd");
+        var tenantId = azureAdSection["TenantId"];
+        var clientId = azureAdSection["ClientId"];
+
+        options.Authority = $"https://login.microsoftonline.com/{tenantId}/v2.0";
+        options.Audience = clientId;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = $"https://login.microsoftonline.com/{tenantId}/v2.0",
+            ValidateAudience = true,
+            ValidAudience = clientId,
+            ValidateLifetime = true
+        };
+    });
+
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer<BearerSecuritySchemeTransformer>();
+});
 
 var app = builder.Build();
 
@@ -58,8 +80,52 @@ if (!app.Environment.IsDevelopment())
 
 app.UseCors();
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 
 app.Run();
+
+public class BearerSecuritySchemeTransformer : IOpenApiDocumentTransformer
+{
+    public Task TransformAsync(OpenApiDocument document, OpenApiDocumentTransformerContext context, CancellationToken cancellationToken)
+    {
+        var requirements = new Dictionary<string, IOpenApiSecurityScheme>
+        {
+            ["Bearer"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "JWT",
+                In = ParameterLocation.Header,
+                Description = "Enter your Microsoft Entra ID JWT token to authenticate."
+            }
+        };
+        document.Components ??= new OpenApiComponents();
+        document.Components.SecuritySchemes = requirements;
+
+        if (document.Paths != null)
+        {
+            foreach (var path in document.Paths.Values)
+            {
+                if (path?.Operations != null)
+                {
+                    foreach (var operation in path.Operations.Values)
+                    {
+                        if (operation != null)
+                        {
+                            operation.Security ??= new List<OpenApiSecurityRequirement>();
+                            operation.Security.Add(new OpenApiSecurityRequirement
+                            {
+                                [new OpenApiSecuritySchemeReference("Bearer", document)] = new List<string>()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+}
